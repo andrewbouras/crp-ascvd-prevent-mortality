@@ -1,0 +1,4 @@
+PREVENT_Tier,Comparison,HR,CI_Lower,CI_Upper,P_Value,N,Events,HR_CI
+Low,CRP >=2 vs <2 mg/L,0.92,0.64,1.33,0.6706,8341,36,0.92 (0.64–1.33)
+Borderline-Intermediate,CRP >=2 vs <2 mg/L,1.33,1.01,1.75,0.0454,4682,176,1.33 (1.01–1.75)
+High,CRP >=2 vs <2 mg/L,1.06,0.74,1.51,0.7415,1101,123,1.06 (0.74–1.51)

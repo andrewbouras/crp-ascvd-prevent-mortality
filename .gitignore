@@ -1,0 +1,17 @@
+# Raw NHANES data (large XPT files -- auto-downloaded by script)
+data/nhanes_raw/
+
+# OS
+.DS_Store
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# Python
+*.egg-info/
+dist/
+build/
+.env
