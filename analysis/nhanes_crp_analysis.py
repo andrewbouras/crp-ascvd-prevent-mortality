@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """
 NHANES CRP and ASCVD Mortality Analysis
-Additive prognostic value of hsCRP across PREVENT-stratified CV risk groups.
+========================================
+Additive Prognostic Value of hsCRP Across PREVENT-Stratified CV Risk Groups
 
-Data:    NHANES 2003-2016, mortality follow-up through Dec 31, 2019
-Methods: Cox PH (all-cause + CV mortality), cause-specific hazard approach,
-         stratified by PREVENT 10-yr CVD risk tiers x AHA hsCRP categories
+Data:    NHANES 2003-2016 (primary), mortality follow-up through Dec 31, 2019
+Methods: Cox PH (all-cause and CV mortality), cause-specific hazard approach
+         Stratified by PREVENT 10-year CVD risk tiers × AHA hsCRP categories
 
 Author:  Andrew Bouras, B.S. | Dr. Vikash Jaiswal (PI)
-Date:    February 2026
+Date:    2026-02-26
 
 References:
-  Khan SS et al. Circulation 2024;149(6):430-449      (PREVENT equation)
-  Mayer MG. preventr v0.11.0, CRAN                    (PREVENT R package)
-  Inker LA et al. N Engl J Med 2021;385:1737-1749     (CKD-EPI 2021)
-  Pearson TA et al. Circulation 2003;107:499-511       (hsCRP thresholds)
+  PREVENT equation: Khan SS et al. Circulation 2024;149(6):430-449
+  PREVENT R package: Mayer MG. preventr v0.11.0 (CRAN)
+  CKD-EPI 2021: Inker LA et al. N Engl J Med 2021;385:1737-1749
+  hsCRP thresholds: Pearson TA et al. Circulation 2003;107:499-511
+  Template paper: Al-jarshawi MJ et al. Eur J Prev Cardiol 2026 (zwag037)
 """
 
-import sys
-import warnings
+import os, sys, warnings, re, io
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -27,16 +28,16 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from pathlib import Path
 import requests
+warnings.filterwarnings('ignore')
 
-warnings.filterwarnings('ignore', category=FutureWarning)
-warnings.filterwarnings('ignore', category=RuntimeWarning)
-
-# --- Configuration ---
+# ─────────────────────────────────────────────────────────────
+# SECTION 1: CONFIGURATION
+# ─────────────────────────────────────────────────────────────
 
 SCRIPT_DIR   = Path(__file__).parent
-PROJECT_DIR  = SCRIPT_DIR.parent
+PROJECT_DIR  = SCRIPT_DIR.parent.parent
 DATA_DIR     = PROJECT_DIR / 'data' / 'nhanes_raw'
-RESULTS_DIR  = PROJECT_DIR / 'results'
+RESULTS_DIR  = SCRIPT_DIR.parent / 'results'
 FIGURES_DIR  = PROJECT_DIR / 'figures'
 
 for d in [DATA_DIR, RESULTS_DIR, FIGURES_DIR]:
@@ -69,7 +70,9 @@ FILE_OVERRIDES = {
     ('C', 'TRIGLY'): 'L13AM',    # LDL/TG
 }
 
-# --- Data download ---
+# ─────────────────────────────────────────────────────────────
+# SECTION 2: DATA DOWNLOAD UTILITIES
+# ─────────────────────────────────────────────────────────────
 
 def download_xpt(sfx: str, file_base: str, yr_range: str, force: bool = False) -> object:
     """Download an NHANES XPT file using the CDC URL format, cache locally.
@@ -142,7 +145,9 @@ def download_mortality(y1: int, y2: int, force: bool = False) -> object:
         return None
 
 
-# --- Clinical calculations ---
+# ─────────────────────────────────────────────────────────────
+# SECTION 3: CLINICAL CALCULATIONS
+# ─────────────────────────────────────────────────────────────
 
 def ckd_epi_2021(scr: float, age: float, sex: int) -> float:
     """
@@ -278,6 +283,51 @@ def prevent_10yr_cvd(age, sex, tc, hdl, sbp, bp_rx, dm, smoker, bmi, egfr) -> fl
     return float(np.clip(risk_10yr, 0.0001, 0.9999))
 
 
+def validate_prevent() -> None:
+    """
+    Regression test: assert prevent_10yr_cvd matches preventr v0.11.0 (CRAN)
+    on three reference patients spanning the risk continuum.
+
+    Reference values were generated from preventr::estimate_risk() with
+    model="base", time="10yr", and chol_unit="mg/dL". preventr internally
+    rounds output to 3 decimal places, which is the agreement tolerance.
+
+    This block is run unconditionally at the start of main() so the analysis
+    will refuse to proceed if the PREVENT implementation has drifted.
+    """
+    cases = [
+        # (label, kwargs, preventr_total_cvd_10yr)
+        ("A: 40F, optimal labs, no risk factors",
+         dict(age=40, sex=2, tc=180, hdl=60, sbp=110, bp_rx=0,
+              dm=0, smoker=0, bmi=24, egfr=95),
+         0.005),
+        ("B: 60M, treated HTN, mild CKD (borderline-intermediate)",
+         dict(age=60, sex=1, tc=220, hdl=42, sbp=140, bp_rx=1,
+              dm=0, smoker=0, bmi=29, egfr=72),
+         0.109),
+        ("C: 70M, diabetes + smoker + CKD (high)",
+         dict(age=70, sex=1, tc=240, hdl=38, sbp=158, bp_rx=1,
+              dm=1, smoker=1, bmi=31, egfr=52),
+         0.399),
+    ]
+    print("\n=== PREVENT validation against preventr v0.11.0 ===")
+    all_pass = True
+    for label, kwargs, expected in cases:
+        actual = prevent_10yr_cvd(**kwargs)
+        rounded = round(actual, 3)
+        status = "PASS" if rounded == expected else "FAIL"
+        if status == "FAIL":
+            all_pass = False
+        print(f"  [{status}] {label}")
+        print(f"         Python = {actual:.6f} → {rounded:.3f}   preventr = {expected:.3f}")
+    if not all_pass:
+        raise RuntimeError(
+            "PREVENT implementation does not match preventr v0.11.0. "
+            "Refusing to run downstream analysis until coefficients are corrected."
+        )
+    print("  All 3 reference patients match preventr v0.11.0 to 3 decimal places.\n")
+
+
 def prevent_risk_tier(risk: float) -> str:
     """Categorize PREVENT 10-yr CVD risk per AHA 2018/2019 guideline tiers."""
     if pd.isna(risk):
@@ -304,7 +354,9 @@ def crp_category(crp: float) -> str:
         return '>3 mg/L'
 
 
-# --- Load single NHANES cycle ---
+# ─────────────────────────────────────────────────────────────
+# SECTION 4: LOAD ONE NHANES CYCLE
+# ─────────────────────────────────────────────────────────────
 
 def load_cycle(sfx: str, yr: dict) -> object:
     """Download, merge, and return a processed dataframe for one NHANES cycle."""
@@ -452,7 +504,9 @@ def load_cycle(sfx: str, yr: dict) -> object:
     return demo
 
 
-# --- Cohort assembly ---
+# ─────────────────────────────────────────────────────────────
+# SECTION 5: BUILD ANALYTIC COHORT
+# ─────────────────────────────────────────────────────────────
 
 def build_cohort(raw: pd.DataFrame) -> pd.DataFrame:
     """Apply inclusion/exclusion criteria and derive analytic variables."""
@@ -623,7 +677,9 @@ def build_cohort(raw: pd.DataFrame) -> pd.DataFrame:
     return df_primary
 
 
-# --- Survival analysis ---
+# ─────────────────────────────────────────────────────────────
+# SECTION 6: SURVIVAL ANALYSIS
+# ─────────────────────────────────────────────────────────────
 
 def cox_hr(df: pd.DataFrame, outcome_col: str, time_col: str = 'FOLLOW_YEARS',
            crp_ref: str = '<1 mg/L', covariates: list = None,
@@ -811,7 +867,107 @@ def cox_hr_dichotomized(df: pd.DataFrame, outcome_col: str,
     return pd.DataFrame(results)
 
 
-def compute_c_statistic(df: pd.DataFrame, covars: list, n_bootstrap: int = 1000) -> list:
+def cox_interaction_test(df: pd.DataFrame, outcome_col: str,
+                         time_col: str = 'FOLLOW_YEARS',
+                         covariates: list = None) -> dict:
+    """
+    Formal test of CRP × PREVENT-tier interaction.
+
+    Fits unweighted Cox PH models on the full cohort:
+      - Reduced: main effects for CRP category, PREVENT tier, and covariates
+      - Full:    reduced + four CRP × tier product terms
+    Reports a likelihood-ratio test (4 df) for the joint null that all four
+    interaction coefficients equal zero, plus a confirmatory Wald χ² and the
+    individual interaction coefficient estimates.
+
+    Survey-weighted Cox models give numerically unstable joint Wald statistics
+    in lifelines (variance matrix scaling artifacts), so the interaction test
+    is reported on the unweighted model. The reference HR estimates and primary
+    effect estimates remain survey-weighted in the main tables.
+    """
+    from lifelines import CoxPHFitter
+    from scipy import stats
+    import warnings
+
+    sub = df.copy()
+    sub['CRP_MOD'] = (sub['CRP_CAT'] == '1-3 mg/L').astype(int)
+    sub['CRP_HIGH'] = (sub['CRP_CAT'] == '>3 mg/L').astype(int)
+    sub['TIER_BI'] = (sub['PREVENT_TIER3'] == 'Borderline-Intermediate').astype(int)
+    sub['TIER_HIGH'] = (sub['PREVENT_TIER3'] == 'High').astype(int)
+    sub['CRP_MOD_x_BI'] = sub['CRP_MOD'] * sub['TIER_BI']
+    sub['CRP_MOD_x_HIGH'] = sub['CRP_MOD'] * sub['TIER_HIGH']
+    sub['CRP_HIGH_x_BI'] = sub['CRP_HIGH'] * sub['TIER_BI']
+    sub['CRP_HIGH_x_HIGH'] = sub['CRP_HIGH'] * sub['TIER_HIGH']
+
+    interaction_terms = ['CRP_MOD_x_BI', 'CRP_MOD_x_HIGH',
+                         'CRP_HIGH_x_BI', 'CRP_HIGH_x_HIGH']
+    main_terms = ['CRP_MOD', 'CRP_HIGH', 'TIER_BI', 'TIER_HIGH']
+
+    cov_cols = [c for c in (covariates or []) if c in sub.columns]
+    cols_full = [time_col, outcome_col] + main_terms + interaction_terms + cov_cols
+    cols_red = [time_col, outcome_col] + main_terms + cov_cols
+
+    m_full = sub[cols_full].dropna()
+    m_red = sub[cols_red].dropna()
+    n = len(m_full)
+    n_events = int(m_full[outcome_col].sum())
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        cph_full = CoxPHFitter(penalizer=0.01)
+        cph_full.fit(m_full, duration_col=time_col, event_col=outcome_col,
+                     show_progress=False)
+        cph_red = CoxPHFitter(penalizer=0.01)
+        cph_red.fit(m_red, duration_col=time_col, event_col=outcome_col,
+                    show_progress=False)
+
+    LL_full = cph_full.log_likelihood_
+    LL_red = cph_red.log_likelihood_
+    df_test = len(interaction_terms)
+    lrt = float(2 * (LL_full - LL_red))
+    lrt_p = float(1 - stats.chi2.cdf(lrt, df=df_test)) if lrt > 0 else float('nan')
+
+    # Confirmatory Wald χ² on the same unweighted fit
+    try:
+        V = cph_full.variance_matrix_.loc[interaction_terms, interaction_terms].values
+        beta = cph_full.params_.loc[interaction_terms].values
+        wald_chi2 = float(beta @ np.linalg.inv(V) @ beta)
+        wald_p = float(1 - stats.chi2.cdf(wald_chi2, df=df_test))
+    except (np.linalg.LinAlgError, KeyError):
+        wald_chi2 = float('nan')
+        wald_p = float('nan')
+
+    coef_rows = []
+    for term in interaction_terms + main_terms:
+        if term in cph_full.params_.index:
+            hr = float(np.exp(cph_full.params_[term]))
+            ci_lo = float(np.exp(cph_full.confidence_intervals_.loc[term, '95% lower-bound']))
+            ci_hi = float(np.exp(cph_full.confidence_intervals_.loc[term, '95% upper-bound']))
+            pval = float(cph_full.summary.loc[term, 'p'])
+            coef_rows.append({
+                'Term': term,
+                'HR': round(hr, 3),
+                'CI_Lower': round(ci_lo, 3),
+                'CI_Upper': round(ci_hi, 3),
+                'P_Value': pval,
+            })
+
+    return {
+        'outcome': outcome_col,
+        'n': n,
+        'events': n_events,
+        'lrt': lrt,
+        'lrt_df': df_test,
+        'lrt_p': lrt_p,
+        'wald_chi2': wald_chi2,
+        'wald_df': df_test,
+        'wald_p': wald_p,
+        'coefficients': pd.DataFrame(coef_rows),
+    }
+
+
+def compute_c_statistic(df: pd.DataFrame, covars: list, n_bootstrap: int = 1000,
+                        weight_col: str = None) -> list:
     """
     Compute Harrell's C-statistic for all-cause mortality models with and without CRP.
     Bootstrap 95% CI with optimism correction.
@@ -823,6 +979,15 @@ def compute_c_statistic(df: pd.DataFrame, covars: list, n_bootstrap: int = 1000)
     results = []
     tiers = ['Low', 'Borderline-Intermediate', 'High']
 
+    use_weights = bool(weight_col)
+
+    def _fit_kwargs(frame_cols):
+        kw = {'duration_col': 'FOLLOW_YEARS', 'event_col': 'ALL_CAUSE_DEATH'}
+        if use_weights and weight_col in frame_cols:
+            kw['weights_col'] = weight_col
+            kw['robust'] = True
+        return kw
+
     for tier in tiers:
         sub = df[df['PREVENT_TIER3'] == tier].copy()
         sub['CRP_MOD'] = (sub['CRP_CAT'] == '1-3 mg/L').astype(int)
@@ -830,6 +995,9 @@ def compute_c_statistic(df: pd.DataFrame, covars: list, n_bootstrap: int = 1000)
 
         cols_base = ['FOLLOW_YEARS', 'ALL_CAUSE_DEATH'] + [c for c in covars if c in sub.columns]
         cols_crp = cols_base + ['CRP_MOD', 'CRP_HIGH']
+        if use_weights and weight_col in sub.columns:
+            cols_base = cols_base + [weight_col]
+            cols_crp = cols_crp + [weight_col]
 
         sub_base = sub[cols_base].dropna()
         sub_crp = sub[cols_crp].dropna()
@@ -838,21 +1006,25 @@ def compute_c_statistic(df: pd.DataFrame, covars: list, n_bootstrap: int = 1000)
             continue
 
         try:
-            # Fit base model (covariates only)
+            # Fit base model (covariates only) — weighted if requested
             cph_base = CoxPHFitter(penalizer=0.01)
-            cph_base.fit(sub_base, duration_col='FOLLOW_YEARS', event_col='ALL_CAUSE_DEATH')
+            cph_base.fit(sub_base, **_fit_kwargs(sub_base.columns))
+            base_features = [c for c in sub_base.columns
+                             if c not in ('FOLLOW_YEARS', 'ALL_CAUSE_DEATH', weight_col or '')]
             c_base = concordance_index(sub_base['FOLLOW_YEARS'],
-                                       -cph_base.predict_partial_hazard(sub_base),
+                                       -cph_base.predict_partial_hazard(sub_base[base_features]),
                                        sub_base['ALL_CAUSE_DEATH'])
 
             # Fit CRP model (covariates + CRP)
             cph_crp = CoxPHFitter(penalizer=0.01)
-            cph_crp.fit(sub_crp, duration_col='FOLLOW_YEARS', event_col='ALL_CAUSE_DEATH')
+            cph_crp.fit(sub_crp, **_fit_kwargs(sub_crp.columns))
+            crp_features = [c for c in sub_crp.columns
+                            if c not in ('FOLLOW_YEARS', 'ALL_CAUSE_DEATH', weight_col or '')]
             c_crp = concordance_index(sub_crp['FOLLOW_YEARS'],
-                                      -cph_crp.predict_partial_hazard(sub_crp),
+                                      -cph_crp.predict_partial_hazard(sub_crp[crp_features]),
                                       sub_crp['ALL_CAUSE_DEATH'])
 
-            # Bootstrap for 95% CI of delta-C
+            # Bootstrap for 95% CI of delta-C — fits also weighted
             delta_boot = []
             n = len(sub_crp)
             for _ in range(n_bootstrap):
@@ -862,14 +1034,14 @@ def compute_c_statistic(df: pd.DataFrame, covars: list, n_bootstrap: int = 1000)
                     continue
                 try:
                     cb = CoxPHFitter(penalizer=0.01)
-                    cb.fit(boot[cols_base], duration_col='FOLLOW_YEARS', event_col='ALL_CAUSE_DEATH')
+                    cb.fit(boot[cols_base], **_fit_kwargs(cols_base))
                     c_b = concordance_index(boot['FOLLOW_YEARS'],
-                                            -cb.predict_partial_hazard(boot[cols_base]),
+                                            -cb.predict_partial_hazard(boot[base_features]),
                                             boot['ALL_CAUSE_DEATH'])
                     cc = CoxPHFitter(penalizer=0.01)
-                    cc.fit(boot[cols_crp], duration_col='FOLLOW_YEARS', event_col='ALL_CAUSE_DEATH')
+                    cc.fit(boot[cols_crp], **_fit_kwargs(cols_crp))
                     c_c = concordance_index(boot['FOLLOW_YEARS'],
-                                            -cc.predict_partial_hazard(boot[cols_crp]),
+                                            -cc.predict_partial_hazard(boot[crp_features]),
                                             boot['ALL_CAUSE_DEATH'])
                     delta_boot.append(c_c - c_b)
                 except Exception:
@@ -900,7 +1072,9 @@ def compute_c_statistic(df: pd.DataFrame, covars: list, n_bootstrap: int = 1000)
     return results
 
 
-# --- Tables ---
+# ─────────────────────────────────────────────────────────────
+# SECTION 7: TABLE GENERATION
+# ─────────────────────────────────────────────────────────────
 
 def generate_table1(df: pd.DataFrame) -> pd.DataFrame:
     """Survey-weighted descriptive statistics stratified by PREVENT tier × CRP category."""
@@ -978,7 +1152,9 @@ def generate_sample_sizes(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# --- Figures ---
+# ─────────────────────────────────────────────────────────────
+# SECTION 8: FIGURES
+# ─────────────────────────────────────────────────────────────
 
 TIER_COLORS = {
     'Low': '#2196F3',
@@ -1195,13 +1371,18 @@ def plot_prevent_distribution(df: pd.DataFrame) -> None:
     print(f"  Saved: {outpath}")
 
 
-# --- Main ---
+# ─────────────────────────────────────────────────────────────
+# SECTION 9: MAIN PIPELINE
+# ─────────────────────────────────────────────────────────────
 
 def main():
     print("=" * 60)
     print("NHANES CRP and ASCVD Mortality Analysis")
     print("Project: crp-ascvd-mortality")
     print("=" * 60)
+
+    # ── Step 0: PREVENT validation against preventr v0.11.0 ──
+    validate_prevent()
 
     # ── Step 1: Download and stack all cycles ──
     print("\n[Step 1] Downloading NHANES data (2003–2016)...")
@@ -1290,6 +1471,38 @@ def main():
     if not cox_cv_adj.empty:
         print(cox_cv_adj[['PREVENT_Tier','CRP_Category','HR_CI','P_Value','Events']].to_string(index=False))
 
+    # ── Step 5b: Formal CRP × PREVENT-tier interaction test ──
+    print("\n[Step 5b] Formal CRP × PREVENT-tier interaction test (unweighted LRT)...")
+    interaction_rows = []
+    for outcome_label, outcome_col in [('All-cause', 'ALL_CAUSE_DEATH'),
+                                       ('CV', 'CV_DEATH')]:
+        try:
+            res = cox_interaction_test(cohort, outcome_col, covariates=covars)
+            print(f"  {outcome_label} mortality (N={res['n']:,}, events={res['events']}):")
+            print(f"    LRT  χ²({res['lrt_df']}) = {res['lrt']:.3f}, "
+                  f"p = {res['lrt_p']:.4f}")
+            print(f"    Wald χ²({res['wald_df']}) = {res['wald_chi2']:.3f}, "
+                  f"p = {res['wald_p']:.4f}")
+            res['coefficients'].to_csv(
+                RESULTS_DIR / f"interaction_coefs_{outcome_col.lower()}.csv",
+                index=False)
+            interaction_rows.append({
+                'Outcome': outcome_label,
+                'N': res['n'],
+                'Events': res['events'],
+                'LRT_chi2': round(res['lrt'], 4),
+                'LRT_df': res['lrt_df'],
+                'LRT_P': res['lrt_p'],
+                'Wald_chi2': round(res['wald_chi2'], 4),
+                'Wald_P': res['wald_p'],
+            })
+        except Exception as e:
+            print(f"  Interaction test failed for {outcome_label}: {e}")
+    if interaction_rows:
+        pd.DataFrame(interaction_rows).to_csv(
+            RESULTS_DIR / 'cox_interaction_test.csv', index=False)
+        print("  Saved: results/cox_interaction_test.csv")
+
     # ── Step 6: Dichotomized CRP (>=2 mg/L) Cox models ──
     print("\n[Step 6] Dichotomized CRP (>=2 mg/L) Cox PH - all-cause mortality...")
     cox_crp2 = cox_hr_dichotomized(cohort, 'ALL_CAUSE_DEATH', covariates=covars)
@@ -1302,9 +1515,11 @@ def main():
         cox_crp2_cv.to_csv(RESULTS_DIR / 'table4_cox_crp2_cvmortality.csv', index=False)
         print("  Saved: results/table4_cox_crp2_cvmortality.csv")
 
-    # ── Step 7: C-statistic (discrimination) ──
-    print("\n[Step 7] C-statistic with bootstrap...")
-    cstat_results = compute_c_statistic(cohort, covars)
+    # ── Step 7: C-statistic (discrimination), survey-weighted ──
+    print("\n[Step 7] C-statistic with bootstrap (survey-weighted Cox fits)...")
+    cstat_results = compute_c_statistic(cohort, covars,
+                                        n_bootstrap=300,
+                                        weight_col='WGTMEC_COMBINED')
     if cstat_results:
         cstat_df = pd.DataFrame(cstat_results)
         cstat_df.to_csv(RESULTS_DIR / 'c_statistic_bootstrap.csv', index=False)
